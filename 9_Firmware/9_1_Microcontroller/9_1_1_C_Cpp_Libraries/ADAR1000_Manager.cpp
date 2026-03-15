@@ -13,10 +13,10 @@ static const struct {
     GPIO_TypeDef* port;
     uint16_t pin;
 } CHIP_SELECTS[4] = {
-    {GPIOA, GPIO_PIN_0}, // ADAR1000 #1
-    {GPIOA, GPIO_PIN_1}, // ADAR1000 #2
-    {GPIOA, GPIO_PIN_2}, // ADAR1000 #3
-    {GPIOA, GPIO_PIN_3}  // ADAR1000 #4
+    {ADAR_1_CS_3V3_GPIO_Port, ADAR_1_CS_3V3_Pin}, // ADAR1000 #1
+    {ADAR_2_CS_3V3_GPIO_Port, ADAR_2_CS_3V3_Pin}, // ADAR1000 #2
+    {ADAR_3_CS_3V3_GPIO_Port, ADAR_3_CS_3V3_Pin}, // ADAR1000 #3
+    {ADAR_4_CS_3V3_GPIO_Port, ADAR_4_CS_3V3_Pin}  // ADAR1000 #4
 };
 
 // Vector Modulator lookup tables
@@ -164,10 +164,10 @@ bool ADAR1000Manager::setBeamAngle(float angle_degrees, BeamDirection direction)
         for (uint8_t ch = 0; ch < 4; ++ch) {
             if (direction == BeamDirection::TX) {
                 adarSetTxPhase(dev, ch + 1, phase_settings[ch], BROADCAST_OFF);
-                adarSetTxVgaGain(dev, ch + 1, 0x7F, BROADCAST_OFF);
+                adarSetTxVgaGain(dev, ch + 1, kDefaultTxVgaGain, BROADCAST_OFF);
             } else {
                 adarSetRxPhase(dev, ch + 1, phase_settings[ch], BROADCAST_OFF);
-                adarSetRxVgaGain(dev, ch + 1, 30, BROADCAST_OFF);
+                adarSetRxVgaGain(dev, ch + 1, kDefaultRxVgaGain, BROADCAST_OFF);
             }
         }
     }
@@ -329,11 +329,11 @@ bool ADAR1000Manager::initializeADTR1107Sequence() {
     // Step 1: Connect all GND pins to ground (assumed in hardware)
 
     // Step 2: Set VDD_SW to 3.3V
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, GPIO_PIN_SET); // EN_P_3V3_VDD_SW
+    HAL_GPIO_WritePin(EN_P_3V3_VDD_SW_GPIO_Port, EN_P_3V3_VDD_SW_Pin, GPIO_PIN_SET);
     HAL_Delay(1);
 
     // Step 3: Set VSS_SW to -3.3V
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, GPIO_PIN_SET); // EN_P_3V3_SW
+    HAL_GPIO_WritePin(EN_P_3V3_SW_GPIO_Port, EN_P_3V3_SW_Pin, GPIO_PIN_SET);
     HAL_Delay(1);
 
     // Step 4: Set CTRL_SW to RX mode initially via GPIO
@@ -341,21 +341,21 @@ bool ADAR1000Manager::initializeADTR1107Sequence() {
     HAL_Delay(1);
 
     // Step 5: Set VGG_LNA to 0
-    uint8_t lna_bias_voltage = 0x00; // Example value, adjust based on your LNA requirements
+    uint8_t lna_bias_voltage = kLnaBiasOff;
     for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
         adarWrite(dev, REG_LNA_BIAS_ON, lna_bias_voltage, BROADCAST_OFF);
-        adarWrite(dev, REG_LNA_BIAS_OFF, 0x00, BROADCAST_OFF);
+        adarWrite(dev, REG_LNA_BIAS_OFF, kLnaBiasOff, BROADCAST_OFF);
     }
 
     // Step 6: Set VDD_LNA to 0V for TX mode
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_13, GPIO_PIN_RESET); // EN_P_3V3_LNA
+    HAL_GPIO_WritePin(EN_P_3V3_ADTR_GPIO_Port, EN_P_3V3_ADTR_Pin, GPIO_PIN_RESET);
     HAL_Delay(2);
 
     // Step 7: Set VGG_PA to safe negative voltage (PA off for TX mode)
     /*A 0x00 value in the
     on or off bias registers, correspond to a 0 V output. A 0xFF in the
     on or off bias registers correspond to a −4.8 V output.*/
-    uint8_t safe_pa_bias = 0x5D; // Safe negative voltage (-1.75V) to keep PA off
+    uint8_t safe_pa_bias = kPaBiasTxSafe; // Safe negative voltage (-1.75V) to keep PA off
     for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
         adarWrite(dev, REG_PA_CH1_BIAS_ON, safe_pa_bias, BROADCAST_OFF);
         adarWrite(dev, REG_PA_CH2_BIAS_ON, safe_pa_bias, BROADCAST_OFF);
@@ -365,9 +365,7 @@ bool ADAR1000Manager::initializeADTR1107Sequence() {
     HAL_Delay(10);
 
     // Step 8: Set VDD_PA to 0V (PA powered up for TX mode)
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0, GPIO_PIN_SET); // EN_P_5V0_PA
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_1, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_2, GPIO_PIN_SET);
+    enablePASupplies();
     HAL_Delay(50);
 
     // Step 9: Adjust VGG_PA voltage between −1.75 V and −0.25 V to achieve the desired IDQ_PA=220mA
@@ -375,7 +373,7 @@ bool ADAR1000Manager::initializeADTR1107Sequence() {
     /*A 0x00 value in the
     on or off bias registers, correspond to a 0 V output. A 0xFF in the
     on or off bias registers correspond to a −4.8 V output.*/
-    uint8_t Idq_pa_bias = 0x0D; // Safe negative voltage (-0.2447V) to keep PA off
+    uint8_t Idq_pa_bias = kPaBiasIdqCalibration; // Safe negative voltage (-0.2447V) to keep PA off
     for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
         adarWrite(dev, REG_PA_CH1_BIAS_ON, Idq_pa_bias, BROADCAST_OFF);
         adarWrite(dev, REG_PA_CH2_BIAS_ON, Idq_pa_bias, BROADCAST_OFF);
@@ -433,23 +431,21 @@ void ADAR1000Manager::setADTR1107Mode(BeamDirection direction) {
         setADTR1107Control(true); // TX mode
 
         // Step 1: Disable LNA power first
-        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_13, GPIO_PIN_RESET); // Disable LNA power
+        disableLNASupplies();
         HAL_Delay(5);
 
         // Step 2: Set LNA bias to safe off value
         for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
-            adarWrite(dev, REG_LNA_BIAS_ON, 0x00, BROADCAST_OFF); // Turn off LNA bias
+            adarWrite(dev, REG_LNA_BIAS_ON, kLnaBiasOff, BROADCAST_OFF); // Turn off LNA bias
         }
         HAL_Delay(5);
 
         // Step 3: Enable PA power
-        HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0, GPIO_PIN_SET); // EN_P_5V0_PA
-        HAL_GPIO_WritePin(GPIOG, GPIO_PIN_1, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOG, GPIO_PIN_2, GPIO_PIN_SET);
+        enablePASupplies();
         HAL_Delay(10);
 
         // Step 4: Set PA bias to operational value
-        uint8_t operational_pa_bias = 0x7F; // Maximum bias for full power
+        uint8_t operational_pa_bias = kPaBiasOperational; // Maximum bias for full power
         for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
             adarWrite(dev, REG_PA_CH1_BIAS_ON, operational_pa_bias, BROADCAST_OFF);
             adarWrite(dev, REG_PA_CH2_BIAS_ON, operational_pa_bias, BROADCAST_OFF);
@@ -469,13 +465,11 @@ void ADAR1000Manager::setADTR1107Mode(BeamDirection direction) {
         setADTR1107Control(false); // RX mode
 
         // Step 1: Disable PA power first
-        HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0, GPIO_PIN_RESET); // EN_P_5V0_PA
-        HAL_GPIO_WritePin(GPIOG, GPIO_PIN_1, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOG, GPIO_PIN_2, GPIO_PIN_RESET);
+        disablePASupplies();
         HAL_Delay(5);
 
         // Step 2: Set PA bias to safe negative voltage
-        uint8_t safe_pa_bias = 0x20;
+        uint8_t safe_pa_bias = kPaBiasRxSafe;
         for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
             adarWrite(dev, REG_PA_CH1_BIAS_ON, safe_pa_bias, BROADCAST_OFF);
             adarWrite(dev, REG_PA_CH2_BIAS_ON, safe_pa_bias, BROADCAST_OFF);
@@ -485,11 +479,11 @@ void ADAR1000Manager::setADTR1107Mode(BeamDirection direction) {
         HAL_Delay(5);
 
         // Step 3: Enable LNA power
-        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_13, GPIO_PIN_SET); // EN_P_3V3_LNA
+        enableLNASupplies();
         HAL_Delay(10);
 
         // Step 4: Set LNA bias to operational value
-        uint8_t operational_lna_bias = 0x30; // Adjust based on your LNA requirements
+        uint8_t operational_lna_bias = kLnaBiasOperational;
         for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
             adarWrite(dev, REG_LNA_BIAS_ON, operational_lna_bias, BROADCAST_OFF);
         }
@@ -536,27 +530,27 @@ bool ADAR1000Manager::setCustomBeamPattern16(const uint8_t phase_pattern[16], Be
 }
 
 void ADAR1000Manager::enablePASupplies() {
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0, GPIO_PIN_SET); // EN_P_5V0_PA
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_1, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_2, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(EN_P_5V0_PA1_GPIO_Port, EN_P_5V0_PA1_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(EN_P_5V0_PA2_GPIO_Port, EN_P_5V0_PA2_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(EN_P_5V0_PA3_GPIO_Port, EN_P_5V0_PA3_Pin, GPIO_PIN_SET);
 }
 
 void ADAR1000Manager::disablePASupplies() {
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0, GPIO_PIN_RESET); // EN_P_5V0_PA
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_1, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_2, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(EN_P_5V0_PA1_GPIO_Port, EN_P_5V0_PA1_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(EN_P_5V0_PA2_GPIO_Port, EN_P_5V0_PA2_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(EN_P_5V0_PA3_GPIO_Port, EN_P_5V0_PA3_Pin, GPIO_PIN_RESET);
 }
 
 void ADAR1000Manager::enableLNASupplies() {
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_13, GPIO_PIN_SET); // EN_P_3V3_LNA
+    HAL_GPIO_WritePin(EN_P_3V3_ADTR_GPIO_Port, EN_P_3V3_ADTR_Pin, GPIO_PIN_SET);
 }
 
 void ADAR1000Manager::disableLNASupplies() {
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_13, GPIO_PIN_RESET); // EN_P_3V3_LNA
+    HAL_GPIO_WritePin(EN_P_3V3_ADTR_GPIO_Port, EN_P_3V3_ADTR_Pin, GPIO_PIN_RESET);
 }
 
 void ADAR1000Manager::setPABias(bool enable) {
-    uint8_t pa_bias = enable ? 0x7F : 0x20; // Operational vs safe bias
+    uint8_t pa_bias = enable ? kPaBiasOperational : kPaBiasRxSafe; // Operational vs safe bias
 
     for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
         adarWrite(dev, REG_PA_CH1_BIAS_ON, pa_bias, BROADCAST_OFF);
@@ -567,7 +561,7 @@ void ADAR1000Manager::setPABias(bool enable) {
 }
 
 void ADAR1000Manager::setLNABias(bool enable) {
-    uint8_t lna_bias = enable ? 0x30 : 0x00; // Operational vs off
+    uint8_t lna_bias = enable ? kLnaBiasOperational : kLnaBiasOff; // Operational vs off
 
     for (uint8_t dev = 0; dev < devices_.size(); ++dev) {
         adarWrite(dev, REG_LNA_BIAS_ON, lna_bias, BROADCAST_OFF);
@@ -740,8 +734,8 @@ void ADAR1000Manager::adarSetTxVgaGain(uint8_t deviceIndex, uint8_t channel, uin
 }
 
 void ADAR1000Manager::adarSetTxBias(uint8_t deviceIndex, uint8_t broadcast) {
-    adarWrite(deviceIndex, REG_BIAS_CURRENT_TX, 0x2D, broadcast);
-    adarWrite(deviceIndex, REG_BIAS_CURRENT_TX_DRV, 0x06, broadcast);
+    adarWrite(deviceIndex, REG_BIAS_CURRENT_TX, kTxBiasCurrent, broadcast);
+    adarWrite(deviceIndex, REG_BIAS_CURRENT_TX_DRV, kTxDriverBiasCurrent, broadcast);
     adarWrite(deviceIndex, REG_LOAD_WORKING, 0x2, broadcast);
 }
 

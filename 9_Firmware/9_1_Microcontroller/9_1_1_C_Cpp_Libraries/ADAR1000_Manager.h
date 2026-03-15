@@ -121,6 +121,18 @@ public:
     static const uint8_t VM_Q[128];
     static const uint8_t VM_GAIN[128];
 
+    // Named defaults for the ADTR1107 and ADAR1000 power sequence.
+    static constexpr uint8_t kDefaultTxVgaGain = 0x7F;
+    static constexpr uint8_t kDefaultRxVgaGain = 30;
+    static constexpr uint8_t kLnaBiasOff = 0x00;
+    static constexpr uint8_t kLnaBiasOperational = 0x30;
+    static constexpr uint8_t kPaBiasTxSafe = 0x5D;
+    static constexpr uint8_t kPaBiasIdqCalibration = 0x0D;
+    static constexpr uint8_t kPaBiasOperational = 0x7F;
+    static constexpr uint8_t kPaBiasRxSafe = 0x20;
+    static constexpr uint8_t kTxBiasCurrent = 0x2D;
+    static constexpr uint8_t kTxDriverBiasCurrent = 0x06;
+
     // Private Methods
     bool initializeSingleDevice(uint8_t deviceIndex);
     bool initializeADTR1107Sequence();
