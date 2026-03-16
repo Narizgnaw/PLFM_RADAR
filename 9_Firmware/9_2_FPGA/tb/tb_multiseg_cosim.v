@@ -379,8 +379,9 @@ initial begin
 
     // ------ SEGMENT 0 ------
     $display("\n  --- Segment 0 ---");
-    // Feed SEGMENT_ADVANCE (896) samples
-    for (i = 0; i < SEGMENT_ADVANCE; i = i + 1) begin
+    // Feed BUFFER_SIZE (1024) samples to fill the entire buffer
+    // (overlap-save fix: seg 0 must fill the full 1024-sample buffer)
+    for (i = 0; i < FFT_SIZE; i = i + 1) begin
         @(posedge clk);
         ddc_i <= (i + 1) & 18'h3FFFF;  // Non-zero, identifiable: 1, 2, 3, ...
         ddc_q <= ((i + 1) * 2) & 18'h3FFFF;
@@ -392,24 +393,19 @@ initial begin
     // Verify segment 0 transition
     @(posedge clk);
     @(posedge clk);
-    $display("    After feeding 896 samples: state=%0d, segment=%0d, chirp_cnt=%0d",
+    $display("    After feeding 1024 samples: state=%0d, segment=%0d, chirp_cnt=%0d",
              fsm_state, cur_seg, chirp_cnt);
     check(cur_seg == 3'd0, "Seg 0: current_segment=0");
 
-    // Verify buffer contents for segment 0
-    // Position 0 should have truncated ddc_i value of sample 0
-    // ddc_i = 1 (18-bit), truncated: ddc_i[17:2] + ddc_i[1] = 0 + 0 = 0
-    // ddc_i = 2: [17:2]=0, [1]=1 -> 0+1 = 1
-    // ddc_i = 4: [17:2]=1, [1]=0 -> 1+0 = 1
-    // This is just the rounding behavior, verify first few:
+    // Verify buffer contents for segment 0 — all 1024 positions written
     $display("    Buffer[0]=%0d, Buffer[1]=%0d, Buffer[127]=%0d",
              buf_probe_i_0, dut.input_buffer_i[1], buf_probe_i_127);
     $display("    Buffer[895]=%0d, Buffer[896]=%0d, Buffer[1023]=%0d",
              buf_probe_i_895, buf_probe_i_896, buf_probe_i_1023);
 
-    // Buffer[896:1023] should be zeros (from initial block, never written in seg 0)
-    check(buf_probe_i_896 == 16'd0, "Seg 0: buffer[896]=0 (unwritten)");
-    check(buf_probe_i_1023 == 16'd0, "Seg 0: buffer[1023]=0 (unwritten)");
+    // Buffer[896:1023] should now be WRITTEN with data (overlap-save fix)
+    check(buf_probe_i_896 != 16'd0, "Seg 0: buffer[896]!=0 (written with data)");
+    check(buf_probe_i_1023 != 16'd0, "Seg 0: buffer[1023]!=0 (written with data)");
 
     // Wait for segment 0 processing to complete
     seg_out = 0;
@@ -441,21 +437,21 @@ initial begin
     check(cur_seg == 3'd1, "Seg 0 done: current_segment=1");
 
     // Verify overlap-save: buffer[0:127] should now contain
-    // what was in buffer[896:1023] of segment 0 (which was zeros)
-    $display("    Overlap check: buffer[0]=%0d (expect 0 from seg0 pos 896)",
+    // what was in buffer[896:1023] of segment 0 (real data, not zeros)
+    $display("    Overlap check: buffer[0]=%0d (from seg0 pos 896, expect non-zero)",
              buf_probe_i_0);
-    check(buf_probe_i_0 == 16'd0, "Overlap-save: buffer[0]=0 (from seg0[896])");
+    check(buf_probe_i_0 != 16'd0, "Overlap-save: buffer[0]!=0 (real data from seg0[896])");
 
     // buffer_write_ptr should be 128 (OVERLAP_SAMPLES)
     check(buf_wptr == 11'd128, "Overlap-save: write_ptr=128");
 
     // ------ SEGMENT 1 ------
     $display("\n  --- Segment 1 ---");
-    // Need to fill from ptr=128 to ptr=896 -> 768 new samples
-    for (i = 0; i < (SEGMENT_ADVANCE - OVERLAP_SAMPLES); i = i + 1) begin
+    // Need to fill from ptr=128 to ptr=1024 -> 896 new samples
+    for (i = 0; i < SEGMENT_ADVANCE; i = i + 1) begin
         @(posedge clk);
-        ddc_i <= ((SEGMENT_ADVANCE + i + 1) * 5) & 18'h3FFFF;  // Different pattern
-        ddc_q <= ((SEGMENT_ADVANCE + i + 1) * 7) & 18'h3FFFF;
+        ddc_i <= ((FFT_SIZE + i + 1) * 5) & 18'h3FFFF;  // Different pattern
+        ddc_q <= ((FFT_SIZE + i + 1) * 7) & 18'h3FFFF;
         ddc_valid <= 1'b1;
     end
     @(posedge clk);
@@ -463,7 +459,7 @@ initial begin
 
     @(posedge clk);
     @(posedge clk);
-    $display("    After feeding 768 samples: state=%0d, segment=%0d, chirp_cnt=%0d",
+    $display("    After feeding 896 samples: state=%0d, segment=%0d, chirp_cnt=%0d",
              fsm_state, cur_seg, chirp_cnt);
 
     // Wait for segment 1 processing
@@ -495,10 +491,11 @@ initial begin
 
     // ------ SEGMENT 2 ------
     $display("\n  --- Segment 2 ---");
-    for (i = 0; i < (SEGMENT_ADVANCE - OVERLAP_SAMPLES); i = i + 1) begin
+    // Feed 896 new samples (ptr 128 -> 1024)
+    for (i = 0; i < SEGMENT_ADVANCE; i = i + 1) begin
         @(posedge clk);
-        ddc_i <= ((2 * SEGMENT_ADVANCE + i + 1) * 3) & 18'h3FFFF;
-        ddc_q <= ((2 * SEGMENT_ADVANCE + i + 1) * 9) & 18'h3FFFF;
+        ddc_i <= ((FFT_SIZE + SEGMENT_ADVANCE + i + 1) * 3) & 18'h3FFFF;
+        ddc_q <= ((FFT_SIZE + SEGMENT_ADVANCE + i + 1) * 9) & 18'h3FFFF;
         ddc_valid <= 1'b1;
     end
     @(posedge clk);
@@ -528,16 +525,25 @@ initial begin
     end
     check(cur_seg == 3'd3, "Seg 2 done: current_segment=3");
 
-    // ------ SEGMENT 3 (final) ------
-    $display("\n  --- Segment 3 (final) ---");
-    for (i = 0; i < (SEGMENT_ADVANCE - OVERLAP_SAMPLES); i = i + 1) begin
+    // ------ SEGMENT 3 (final — partial, zero-padded) ------
+    $display("\n  --- Segment 3 (final, partial + zero-pad) ---");
+    // Total consumed so far: 1024 + 896 + 896 = 2816
+    // Remaining: 3000 - 2816 = 184 new samples
+    // After feeding 184 samples, chirp_complete fires and zero-padding begins
+    for (i = 0; i < (LONG_CHIRP_SAMPLES - FFT_SIZE - 2 * SEGMENT_ADVANCE); i = i + 1) begin
         @(posedge clk);
-        ddc_i <= ((3 * SEGMENT_ADVANCE + i + 1) * 11) & 18'h3FFFF;
-        ddc_q <= ((3 * SEGMENT_ADVANCE + i + 1) * 13) & 18'h3FFFF;
+        ddc_i <= ((FFT_SIZE + 2 * SEGMENT_ADVANCE + i + 1) * 11) & 18'h3FFFF;
+        ddc_q <= ((FFT_SIZE + 2 * SEGMENT_ADVANCE + i + 1) * 13) & 18'h3FFFF;
         ddc_valid <= 1'b1;
     end
     @(posedge clk);
     ddc_valid <= 1'b0;
+
+    // Wait a few clocks for chirp_complete to fire and zero-padding to begin
+    repeat(5) @(posedge clk);
+    $display("    After feeding %0d samples: state=%0d, segment=%0d, chirp_cnt=%0d",
+             LONG_CHIRP_SAMPLES - FFT_SIZE - 2 * SEGMENT_ADVANCE,
+             fsm_state, cur_seg, chirp_cnt);
 
     seg_out = 0;
     wait_count = 0;

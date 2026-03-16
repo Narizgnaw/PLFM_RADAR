@@ -213,8 +213,13 @@ always @(posedge clk or negedge reset_n) begin
                 // evaluated every clock (not gated by ddc_valid) to avoid
                 // missing the transition when buffer_write_ptr updates via
                 // non-blocking assignment one cycle after the last write.
+                //
+                // Overlap-save fix: fill the FULL 1024-sample buffer before
+                // processing.  For segment 0 this means 1024 fresh samples.
+                // For segments 1+, write_ptr starts at OVERLAP_SAMPLES (128)
+                // so we collect 896 new samples to fill the buffer.
                 if (use_long_chirp) begin
-                    if (buffer_write_ptr >= SEGMENT_ADVANCE) begin
+                    if (buffer_write_ptr >= BUFFER_SIZE) begin
                         buffer_has_data <= 1;
                         state <= ST_WAIT_REF;
                         segment_request <= current_segment[1:0];
@@ -231,12 +236,21 @@ always @(posedge clk or negedge reset_n) begin
                         `ifdef SIMULATION
                         $display("[MULTI_SEG_FIXED] End of long chirp reached");
                         `endif
+                        // If buffer isn't full yet, zero-pad the remainder
+                        // (last segment with fewer than 896 new samples)
+                        if (buffer_write_ptr < BUFFER_SIZE) begin
+                            state <= ST_ZERO_PAD;
+                            `ifdef SIMULATION
+                            $display("[MULTI_SEG_FIXED] Last segment partial: zero-padding from %0d to %0d",
+                                     buffer_write_ptr, BUFFER_SIZE - 1);
+                            `endif
+                        end
                     end
                 end
             end
             
             ST_ZERO_PAD: begin
-                // For short chirp: zero-pad remaining buffer
+                // Zero-pad remaining buffer (short chirp or last long chirp segment)
                 input_buffer_i[buffer_write_ptr] <= 16'd0;
                 input_buffer_q[buffer_write_ptr] <= 16'd0;
                 buffer_write_ptr <= buffer_write_ptr + 1;
@@ -246,7 +260,7 @@ always @(posedge clk or negedge reset_n) begin
                     buffer_has_data <= 1;
                     buffer_write_ptr <= 0;
                     state <= ST_WAIT_REF;
-                    segment_request <= 0;  // Only one segment for short chirp
+                    segment_request <= use_long_chirp ? current_segment[1:0] : 2'd0;
                     mem_request <= 1;
                     `ifdef SIMULATION
                     $display("[MULTI_SEG_FIXED] Zero-pad complete, buffer full");
