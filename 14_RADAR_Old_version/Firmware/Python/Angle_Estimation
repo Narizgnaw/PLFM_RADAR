@@ -1,0 +1,46 @@
+import numpy as np
+
+# Constants
+MATRIX_SIZE = 83  # 83x83 matrix
+BUFFER_SIZE = MATRIX_SIZE * MATRIX_SIZE  # 6889 elements
+AZIMUTH_RANGE = (-41.8, 41.8)  # Azimuth range
+ELEVATION_RANGE = (41.8, -41.8)  # Elevation range
+
+def generate_angle_grid():
+    """Generate azimuth and elevation matrices."""
+    azimuth_values = np.linspace(AZIMUTH_RANGE[0], AZIMUTH_RANGE[1], MATRIX_SIZE)
+    elevation_values = np.linspace(ELEVATION_RANGE[0], ELEVATION_RANGE[1], MATRIX_SIZE)
+    
+    azimuth_matrix, elevation_matrix = np.meshgrid(azimuth_values, elevation_values)
+    return azimuth_matrix, elevation_matrix
+
+def process_radar_data(buffer):
+    """Convert buffer into an 83x83 matrix, find max value position, and get azimuth/elevation."""
+    if len(buffer) != BUFFER_SIZE:
+        raise ValueError(f"Invalid buffer size! Expected {BUFFER_SIZE}, got {len(buffer)}")
+    
+    # Reshape buffer into [83][83] matrix
+    matrix = np.array(buffer).reshape((MATRIX_SIZE, MATRIX_SIZE))
+    
+    # Find position of the max value
+    max_index = np.unravel_index(np.argmax(matrix), matrix.shape)
+    
+    # Generate azimuth and elevation mapping
+    azimuth_matrix, elevation_matrix = generate_angle_grid()
+    
+    # Get azimuth and elevation for max value position
+    max_azimuth = azimuth_matrix[max_index]
+    max_elevation = elevation_matrix[max_index]
+    
+    return matrix, max_index, max_azimuth, max_elevation
+
+# Example: Simulated buffer with random values (Replace with actual RADAR data)
+np.random.seed(42)  # For reproducibility
+buffer = np.random.rand(BUFFER_SIZE)  # Simulated intensity values
+
+# Process the buffer
+matrix, max_pos, max_azimuth, max_elevation = process_radar_data(buffer)
+
+# Output results
+print(f"Max value found at matrix position: {max_pos}")
+print(f"Estimated Target Angles -> Azimuth: {max_azimuth:.2f}°, Elevation: {max_elevation:.2f}°")
