@@ -47,6 +47,18 @@ module tb_usb_data_interface;
     // Pulldown: when nobody drives, data reads as 0 (not X)
     pulldown pd[31:0] (ft601_data);
 
+    // Host-to-FPGA data bus driver (for read path testing)
+    reg [31:0] host_data_drive;
+    reg        host_data_drive_en;
+    assign ft601_data = host_data_drive_en ? host_data_drive : 32'hzzzz_zzzz;
+
+    // DUT command outputs (Gap 4: USB Read Path)
+    wire [31:0] cmd_data;
+    wire        cmd_valid;
+    wire [7:0]  cmd_opcode;
+    wire [7:0]  cmd_addr;
+    wire [15:0] cmd_value;
+
     // ── Clock generators (asynchronous) ────────────────────────
     always #(CLK_PERIOD / 2) clk = ~clk;
     always #(FT_CLK_PERIOD / 2) ft601_clk_in = ~ft601_clk_in;
@@ -76,7 +88,14 @@ module tb_usb_data_interface;
         .ft601_srb        (ft601_srb),
         .ft601_swb        (ft601_swb),
         .ft601_clk_out    (ft601_clk_out),
-        .ft601_clk_in     (ft601_clk_in)
+        .ft601_clk_in     (ft601_clk_in),
+        
+        // Host command outputs (Gap 4: USB Read Path)
+        .cmd_data         (cmd_data),
+        .cmd_valid        (cmd_valid),
+        .cmd_opcode       (cmd_opcode),
+        .cmd_addr         (cmd_addr),
+        .cmd_value        (cmd_value)
     );
 
     // ── Test bookkeeping ───────────────────────────────────────
@@ -118,6 +137,8 @@ module tb_usb_data_interface;
             ft601_rxf        = 1;
             ft601_srb        = 2'b00;
             ft601_swb        = 2'b00;
+            host_data_drive  = 32'h0;
+            host_data_drive_en = 0;
             repeat (6) @(posedge ft601_clk_in);
             reset_n = 1;
             repeat (2) @(posedge ft601_clk_in);
@@ -182,6 +203,52 @@ module tb_usb_data_interface;
         end
     endtask
 
+    // ── Helper: wait for read FSM to reach a specific state ───
+    task wait_for_read_state;
+        input [2:0] target;
+        input integer max_cyc;
+        integer cnt;
+        begin
+            cnt = 0;
+            while (uut.read_state !== target && cnt < max_cyc) begin
+                @(posedge ft601_clk_in);
+                cnt = cnt + 1;
+            end
+        end
+    endtask
+
+    // ── Helper: send a single host command word via the read path ──
+    // Simulates the FT601 host presenting a 32-bit command word.
+    // Protocol: Assert RXF=0 (data available), wait for OE_N=0,
+    // drive data bus, wait for RD_N=0, then release.
+    task send_host_command;
+        input [31:0] cmd_word;
+        begin
+            // Signal host has data
+            ft601_rxf = 0;
+            // Wait for FPGA to assert OE_N (bus turnaround)
+            wait_for_read_state(3'd1, 20); // RD_OE_ASSERT = 3'd1
+            @(posedge ft601_clk_in); #1;
+            // Drive data bus (FT601 drives in real hardware)
+            host_data_drive = cmd_word;
+            host_data_drive_en = 1;
+            // Wait for FPGA to assert RD_N=0 (RD_READING state)
+            wait_for_read_state(3'd2, 20); // RD_READING = 3'd2
+            @(posedge ft601_clk_in); #1;
+            // Data has been sampled. FPGA deasserts RD then OE.
+            // Wait for RD_PROCESS or back to RD_IDLE
+            wait_for_read_state(3'd4, 20); // RD_PROCESS = 3'd4
+            @(posedge ft601_clk_in); #1;
+            // Release bus and deassert RXF
+            host_data_drive_en = 0;
+            host_data_drive = 32'h0;
+            ft601_rxf = 1;
+            // Wait for read FSM to return to idle
+            wait_for_read_state(3'd0, 20); // RD_IDLE = 3'd0
+            @(posedge ft601_clk_in); #1;
+        end
+    endtask
+
     // Drive a complete packet through the FSM by sequentially providing
     // range, doppler (4x), and cfar valid pulses.
     task drive_full_packet;
@@ -212,6 +279,8 @@ module tb_usb_data_interface;
         pass_count   = 0;
         fail_count   = 0;
         test_num     = 0;
+        host_data_drive    = 32'h0;
+        host_data_drive_en = 0;
 
         csv_file = $fopen("tb_usb_data_interface.csv", "w");
         $fwrite(csv_file, "test_num,pass_fail,label\n");
@@ -552,6 +621,105 @@ module tb_usb_data_interface;
 
         check(uut.range_profile_cap === 32'hCCCC_DDDD,
               "Packet 2 range data captured correctly");
+
+        // ════════════════════════════════════════════════════════
+        // TEST GROUP 12: Read Path - Single Command (Gap 4)
+        // ════════════════════════════════════════════════════════
+        $display("\n--- Test Group 12: Read Path - Single Command ---");
+        apply_reset;
+        // Write FSM is IDLE, so read FSM can activate
+
+        // Send "Set radar mode" command: opcode=0x01, addr=0x00, value=0x0002
+        send_host_command({8'h01, 8'h00, 16'h0002});
+
+        check(cmd_opcode === 8'h01,
+              "Read path: cmd_opcode=0x01 (set mode)");
+        check(cmd_addr === 8'h00,
+              "Read path: cmd_addr=0x00");
+        check(cmd_value === 16'h0002,
+              "Read path: cmd_value=0x0002 (single-chirp mode)");
+        check(cmd_data === {8'h01, 8'h00, 16'h0002},
+              "Read path: cmd_data matches full command word");
+
+        // Verify read FSM returned to idle
+        check(uut.read_state === 3'd0,
+              "Read FSM returned to RD_IDLE after command");
+
+        // ════════════════════════════════════════════════════════
+        // TEST GROUP 13: Read Path - Multiple Commands (Gap 4)
+        // ════════════════════════════════════════════════════════
+        $display("\n--- Test Group 13: Read Path - Multiple Commands ---");
+        apply_reset;
+
+        // Command 1: Set radar mode to auto-scan (0x01)
+        send_host_command({8'h01, 8'h00, 16'h0001});
+        check(cmd_opcode === 8'h01,
+              "Multi-cmd 1: opcode=0x01 (set mode)");
+        check(cmd_value === 16'h0001,
+              "Multi-cmd 1: value=0x0001 (auto-scan)");
+
+        // Command 2: Single chirp trigger (0x02)
+        send_host_command({8'h02, 8'h00, 16'h0000});
+        check(cmd_opcode === 8'h02,
+              "Multi-cmd 2: opcode=0x02 (trigger)");
+
+        // Command 3: Set CFAR threshold (0x03)
+        send_host_command({8'h03, 8'h00, 16'h1234});
+        check(cmd_opcode === 8'h03,
+              "Multi-cmd 3: opcode=0x03 (CFAR threshold)");
+        check(cmd_value === 16'h1234,
+              "Multi-cmd 3: value=0x1234");
+
+        // Command 4: Set stream control (0x04)
+        send_host_command({8'h04, 8'h00, 16'h0005});
+        check(cmd_opcode === 8'h04,
+              "Multi-cmd 4: opcode=0x04 (stream control)");
+        check(cmd_value === 16'h0005,
+              "Multi-cmd 4: value=0x0005 (range+cfar)");
+
+        // ════════════════════════════════════════════════════════
+        // TEST GROUP 14: Read/Write Interleave (Gap 4)
+        // Verifies no bus contention: read FSM only operates when
+        // write FSM is IDLE.
+        // ════════════════════════════════════════════════════════
+        $display("\n--- Test Group 14: Read/Write Interleave ---");
+        apply_reset;
+        ft601_txe = 0;
+
+        // Start a write packet
+        assert_range_valid(32'hFACE_FEED);
+        wait_for_state(S_SEND_HEADER, 50);
+        @(posedge ft601_clk_in); #1;
+
+        // While write FSM is active, assert RXF=0 (host has data)
+        // Read FSM should NOT activate (read_state stays RD_IDLE)
+        ft601_rxf = 0;
+        repeat (5) @(posedge ft601_clk_in); #1;
+
+        check(uut.read_state === 3'd0,
+              "Read FSM stays in RD_IDLE while write FSM active");
+
+        // Deassert RXF, complete the write packet
+        ft601_rxf = 1;
+        wait_for_state(S_SEND_DOPPLER, 100);
+        pulse_doppler_once(16'hAAAA, 16'hBBBB);
+        pulse_doppler_once(16'hAAAA, 16'hBBBB);
+        pulse_doppler_once(16'hAAAA, 16'hBBBB);
+        pulse_doppler_once(16'hAAAA, 16'hBBBB);
+        wait_for_state(S_SEND_DETECT, 100);
+        pulse_cfar_once(1'b1);
+        wait_for_state(S_IDLE, 100);
+        @(posedge ft601_clk_in); #1;
+
+        check(uut.current_state === S_IDLE,
+              "Write packet completed, FSM in IDLE");
+
+        // Now send a read command — should work fine after write completes
+        send_host_command({8'h01, 8'h00, 16'h0002});
+        check(cmd_opcode === 8'h01,
+              "Read after write: cmd_opcode=0x01");
+        check(cmd_value === 16'h0002,
+              "Read after write: cmd_value=0x0002");
 
         // ════════════════════════════════════════════════════════
         // Summary

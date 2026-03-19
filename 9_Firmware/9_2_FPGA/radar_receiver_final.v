@@ -22,7 +22,12 @@ module radar_receiver_final (
     // Matched filter range profile output (for USB)
     output wire signed [15:0] range_profile_i_out,
     output wire signed [15:0] range_profile_q_out,
-    output wire range_profile_valid_out
+    output wire range_profile_valid_out,
+    
+    // Host command inputs (Gap 4: USB Read Path)
+    // CDC-synchronized in radar_system_top.v before reaching here
+    input wire [1:0] host_mode,      // Radar mode: 00=STM32, 01=auto-scan, 10=single-chirp
+    input wire host_trigger           // Single-chirp trigger pulse (1 clk cycle)
 );
 
 // ========== INTERNAL SIGNALS ==========
@@ -81,11 +86,11 @@ wire [5:0] rmc_azimuth_count;
 radar_mode_controller rmc (
     .clk(clk),
     .reset_n(reset_n),
-    .mode(2'b01),                     // Auto-scan mode
+    .mode(host_mode),                     // Controlled by host via USB (default: 2'b01 auto-scan)
     .stm32_new_chirp(1'b0),           // Unused in auto mode
     .stm32_new_elevation(1'b0),       // Unused in auto mode
     .stm32_new_azimuth(1'b0),         // Unused in auto mode
-    .trigger(1'b0),                   // Unused in auto mode
+    .trigger(host_trigger),           // Single-chirp trigger from host via USB
     .use_long_chirp(use_long_chirp),
     .mc_new_chirp(mc_new_chirp),
     .mc_new_elevation(mc_new_elevation),

@@ -176,6 +176,21 @@ wire usb_cfar_valid;
 // System status
 reg [3:0] status_reg;
 
+// USB host command outputs (Gap 4: USB Read Path)
+// These are in the ft601_clk domain; CDC'd to clk_100m below
+wire [31:0] usb_cmd_data;
+wire        usb_cmd_valid;     // 1-cycle pulse in ft601_clk domain
+wire [7:0]  usb_cmd_opcode;
+wire [7:0]  usb_cmd_addr;
+wire [15:0] usb_cmd_value;
+
+// USB command decode registers (clk_100m domain, driven by CDC block below)
+// Declared here (before rx_inst) so Icarus Verilog can resolve forward refs.
+reg [1:0]  host_radar_mode;
+reg        host_trigger_pulse;
+reg [15:0] host_cfar_threshold;
+reg [2:0]  host_stream_control;
+
 // ============================================================================
 // CLOCK BUFFERING
 // ============================================================================
@@ -407,7 +422,11 @@ radar_receiver_final rx_inst (
     // Matched filter range profile (for USB)
     .range_profile_i_out(rx_range_profile[15:0]),
     .range_profile_q_out(rx_range_profile[31:16]),
-    .range_profile_valid_out(rx_range_valid)
+    .range_profile_valid_out(rx_range_valid),
+    
+    // Host command inputs (Gap 4: USB Read Path, CDC-synchronized)
+    .host_mode(host_radar_mode),
+    .host_trigger(host_trigger_pulse)
 );
 
 // ============================================================================
@@ -496,8 +515,81 @@ usb_data_interface usb_inst (
     .ft601_srb(ft601_srb),
     .ft601_swb(ft601_swb),
     .ft601_clk_out(ft601_clk_out),
-    .ft601_clk_in(ft601_clk_buf)
+    .ft601_clk_in(ft601_clk_buf),
+    
+    // Host command outputs (Gap 4: USB Read Path)
+    .cmd_data(usb_cmd_data),
+    .cmd_valid(usb_cmd_valid),
+    .cmd_opcode(usb_cmd_opcode),
+    .cmd_addr(usb_cmd_addr),
+    .cmd_value(usb_cmd_value)
 );
+
+// ============================================================================
+// USB COMMAND CDC: ft601_clk → clk_100m (Gap 4: USB Read Path)
+// ============================================================================
+// cmd_valid is a 1-cycle pulse in ft601_clk. Use toggle CDC (same pattern
+// as chirp_frame_toggle_120m above) to safely transfer it to clk_100m.
+// cmd_data/opcode/addr/value are held stable after cmd_valid pulses, so
+// we simply sample them in clk_100m when the CDC'd pulse arrives.
+
+// Step 1: Toggle on cmd_valid pulse (ft601_clk domain)
+reg cmd_valid_toggle_ft601;
+always @(posedge ft601_clk_buf or negedge sys_reset_ft601_n) begin
+    if (!sys_reset_ft601_n)
+        cmd_valid_toggle_ft601 <= 1'b0;
+    else if (usb_cmd_valid)
+        cmd_valid_toggle_ft601 <= ~cmd_valid_toggle_ft601;
+end
+
+// Step 2: Synchronize toggle to clk_100m domain (3-stage)
+wire cmd_valid_toggle_100m;
+cdc_single_bit #(
+    .STAGES(3)
+) cdc_cmd_valid (
+    .src_clk(ft601_clk_buf),
+    .dst_clk(clk_100m_buf),
+    .reset_n(sys_reset_n),
+    .src_signal(cmd_valid_toggle_ft601),
+    .dst_signal(cmd_valid_toggle_100m)
+);
+
+// Step 3: Edge-detect toggle to recover pulse in clk_100m domain
+reg cmd_valid_toggle_100m_prev;
+always @(posedge clk_100m_buf or negedge sys_reset_n) begin
+    if (!sys_reset_n)
+        cmd_valid_toggle_100m_prev <= 1'b0;
+    else
+        cmd_valid_toggle_100m_prev <= cmd_valid_toggle_100m;
+end
+wire cmd_valid_100m = cmd_valid_toggle_100m ^ cmd_valid_toggle_100m_prev;
+
+// Step 4: Command decode registers in clk_100m domain
+// Sample cmd_data fields when CDC'd valid pulse arrives. Data is stable
+// because the read FSM holds cmd_opcode/addr/value until the next command.
+// NOTE: reg declarations for host_radar_mode, host_trigger_pulse,
+// host_cfar_threshold, host_stream_control are in INTERNAL SIGNALS section
+// above (before rx_inst) to avoid Icarus Verilog forward-reference errors.
+
+always @(posedge clk_100m_buf or negedge sys_reset_n) begin
+    if (!sys_reset_n) begin
+        host_radar_mode    <= 2'b01;   // Default: auto-scan
+        host_trigger_pulse <= 1'b0;
+        host_cfar_threshold <= 16'd10000; // Default threshold
+        host_stream_control <= 3'b111;    // Default: all streams enabled
+    end else begin
+        host_trigger_pulse <= 1'b0;    // Self-clearing pulse
+        if (cmd_valid_100m) begin
+            case (usb_cmd_opcode)
+                8'h01: host_radar_mode     <= usb_cmd_value[1:0];
+                8'h02: host_trigger_pulse  <= 1'b1;
+                8'h03: host_cfar_threshold <= usb_cmd_value;
+                8'h04: host_stream_control <= usb_cmd_value[2:0];
+                default: ; // 0xFF status request handled elsewhere
+            endcase
+        end
+    end
+end
 
 // ============================================================================
 // OUTPUT ASSIGNMENTS
