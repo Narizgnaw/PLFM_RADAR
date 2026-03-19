@@ -275,8 +275,8 @@ run_test() {
 
     # Count PASS/FAIL in output (testbenches use explicit [PASS]/[FAIL] markers)
     local test_pass test_fail
-    test_pass=$(echo "$output" | grep -ci '\bPASS\b' || true)
-    test_fail=$(echo "$output" | grep -ci '\bFAIL\b' || true)
+    test_pass=$(echo "$output" | grep -Ec '^\[PASS([^]]*)\]' || true)
+    test_fail=$(echo "$output" | grep -Ec '^\[FAIL([^]]*)\]' || true)
 
     if [[ "$test_fail" -gt 0 ]]; then
         echo -e "${RED}FAIL${NC} (pass=$test_pass, fail=$test_fail)"
@@ -403,7 +403,7 @@ if [[ "$QUICK" -eq 0 ]]; then
         matched_filter_multi_segment.v matched_filter_processing_chain.v \
         range_bin_decimator.v doppler_processor.v xfft_32.v fft_engine.v
 
-    # Full system top
+    # Full system top (monitoring-only, legacy)
     run_test "System Top (radar_system_tb)" \
         tb/tb_system_reg.vvp \
         tb/radar_system_tb.v radar_system_top.v \
@@ -415,9 +415,22 @@ if [[ "$QUICK" -eq 0 ]]; then
         matched_filter_multi_segment.v matched_filter_processing_chain.v \
         range_bin_decimator.v doppler_processor.v xfft_32.v fft_engine.v \
         usb_data_interface.v edge_detector.v radar_mode_controller.v
+
+    # E2E integration (46 strict checks: TX, RX, USB R/W, CDC, safety, reset)
+    run_test "System E2E (tb_system_e2e)" \
+        tb/tb_system_e2e_reg.vvp \
+        tb/tb_system_e2e.v radar_system_top.v \
+        radar_transmitter.v dac_interface_single.v plfm_chirp_controller.v \
+        radar_receiver_final.v tb/ad9484_interface_400m_stub.v \
+        ddc_400m.v nco_400m_enhanced.v cic_decimator_4x_enhanced.v \
+        cdc_modules.v fir_lowpass.v ddc_input_interface.v \
+        chirp_memory_loader_param.v latency_buffer.v \
+        matched_filter_multi_segment.v matched_filter_processing_chain.v \
+        range_bin_decimator.v doppler_processor.v xfft_32.v fft_engine.v \
+        usb_data_interface.v edge_detector.v radar_mode_controller.v
 else
-    echo "  (skipped receiver golden + system top — use without --quick)"
-    SKIP=$((SKIP + 3))
+    echo "  (skipped receiver golden + system top + E2E — use without --quick)"
+    SKIP=$((SKIP + 4))
 fi
 
 echo ""

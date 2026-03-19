@@ -69,9 +69,10 @@ initial begin
     `endif
     
     // === LOAD SHORT CHIRP ===
-    // Load first 50 samples (0-49)
-    $readmemh(SHORT_I_FILE, short_chirp_i);
-    $readmemh(SHORT_Q_FILE, short_chirp_q);
+    // Load first 50 samples (0-49). Explicit range prevents iverilog warning
+    // about insufficient words for the full [0:1023] array.
+    $readmemh(SHORT_I_FILE, short_chirp_i, 0, 49);
+    $readmemh(SHORT_Q_FILE, short_chirp_q, 0, 49);
     `ifdef SIMULATION
     if (DEBUG) $display("[MEM] Loaded short chirp (0-49)");
     `endif

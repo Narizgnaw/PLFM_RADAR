@@ -80,9 +80,13 @@ assign elevation__toggling = new_elevation;
 assign azimuth__toggling = new_azimuth;
 assign new_chirp_frame = (current_state == IDLE && next_state == LONG_CHIRP);
 
-// Mixers Enabling
-assign rx_mixer_en = mixers_enable;
-assign tx_mixer_en = mixers_enable;
+// Mixer TX/RX sequencing — mutually exclusive based on chirp FSM state.
+// TX mixer active during chirp transmission, RX mixer during listen.
+// Both require mixers_enable (STM32 master enable) to be high.
+assign tx_mixer_en = mixers_enable && (current_state == LONG_CHIRP ||
+                                       current_state == SHORT_CHIRP);
+assign rx_mixer_en = mixers_enable && (current_state == LONG_LISTEN ||
+                                       current_state == SHORT_LISTEN);
 
 // ADTR1000 pull to ground tx and rx load pins if not used
 assign adar_tx_load_1 = 1'b0;

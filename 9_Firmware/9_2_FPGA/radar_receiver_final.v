@@ -35,7 +35,15 @@ module radar_receiver_final (
     input wire [15:0] host_guard_cycles,
     input wire [15:0] host_short_chirp_cycles,
     input wire [15:0] host_short_listen_cycles,
-    input wire [5:0]  host_chirps_per_elev
+    input wire [5:0]  host_chirps_per_elev,
+
+    // STM32 toggle signals for mode 00 (STM32-driven) pass-through.
+    // These are CDC-synchronized in radar_system_top.v / radar_transmitter.v
+    // before reaching this module. In mode 00, the RX mode controller uses
+    // these to synchronize receiver processing with STM32-timed chirps.
+    input wire stm32_new_chirp_rx,
+    input wire stm32_new_elevation_rx,
+    input wire stm32_new_azimuth_rx
 );
 
 // ========== INTERNAL SIGNALS ==========
@@ -95,9 +103,9 @@ radar_mode_controller rmc (
     .clk(clk),
     .reset_n(reset_n),
     .mode(host_mode),                     // Controlled by host via USB (default: 2'b01 auto-scan)
-    .stm32_new_chirp(1'b0),           // Unused in auto mode
-    .stm32_new_elevation(1'b0),       // Unused in auto mode
-    .stm32_new_azimuth(1'b0),         // Unused in auto mode
+    .stm32_new_chirp(stm32_new_chirp_rx),
+    .stm32_new_elevation(stm32_new_elevation_rx),
+    .stm32_new_azimuth(stm32_new_azimuth_rx),
     .trigger(host_trigger),           // Single-chirp trigger from host via USB
     // Gap 2: Runtime-configurable timing from host USB commands
     .cfg_long_chirp_cycles(host_long_chirp_cycles),
@@ -302,27 +310,17 @@ always @(posedge clk or negedge reset_n) begin
         // Default: no pulse
         new_frame_pulse <= 1'b0;
         
-        // ===== CHOOSE ONE FRAME DETECTION METHOD =====
-        
-        // METHOD A: Detect frame start at chirp_counter = 0
-        // (Assumes frames are 64 chirps: 0-63)
-        //if (chirp_counter == 6'd0 && chirp_counter_prev != 6'd0) begin
-        //    new_frame_pulse <= 1'b1;
-        //end
-        
-        // METHOD B: Detect frame start at chirp_counter = 0 AND 32
-        // (For 32-chirp frames in a 64-chirp sequence)
-         if ((chirp_counter == 6'd0 || chirp_counter == 6'd32) && 
-             (chirp_counter_prev != chirp_counter)) begin
-             new_frame_pulse <= 1'b1;
-         end
-        
-        // METHOD C: Programmable frame start
-        // localparam FRAME_START_CHIRP = 6'd0;  // Set based on your sequence
-        // if (chirp_counter == FRAME_START_CHIRP && 
-        //     chirp_counter_prev != FRAME_START_CHIRP) begin
-        //     new_frame_pulse <= 1'b1;
-        // end
+        // Dynamic frame detection using host_chirps_per_elev.
+        // Detect frame boundary when chirp_counter changes AND is a
+        // multiple of host_chirps_per_elev (0, N, 2N, 3N, ...).
+        // Uses a modulo counter that resets at host_chirps_per_elev.
+        if (chirp_counter != chirp_counter_prev) begin
+            if (chirp_counter == 6'd0 ||
+                chirp_counter == host_chirps_per_elev ||
+                chirp_counter == {host_chirps_per_elev, 1'b0}) begin
+                new_frame_pulse <= 1'b1;
+            end
+        end
         
         // Store previous value
         chirp_counter_prev <= chirp_counter;

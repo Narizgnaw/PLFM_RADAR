@@ -178,10 +178,21 @@ reg [15:0] doppler_real_cap;
 reg [15:0] doppler_imag_cap;
 reg cfar_detection_cap;
 
+// Data-pending flags (ft601_clk domain).
+// Set when a valid edge is detected, cleared when the write FSM consumes
+// or skips the data. Prevents the write FSM from blocking forever when
+// a stream's valid hasn't fired yet (e.g., Doppler needs 32 chirps).
+reg doppler_data_pending;
+reg cfar_data_pending;
+
 // Gap 2: CDC for stream_control (clk_100m -> ft601_clk_in)
 // stream_control changes infrequently (only on host USB command), so
 // per-bit 2-stage synchronizers are sufficient. No Gray coding needed
 // because the bits are independent enables.
+// Fix #5: Default to range-only (3'b001) on reset to prevent write FSM
+// deadlock before host configures streams. With all streams enabled on
+// reset, the first range_valid triggers the write FSM which then blocks
+// forever on SEND_DOPPLER_DATA (Doppler hasn't produced data yet).
 (* ASYNC_REG = "TRUE" *) reg [2:0] stream_ctrl_sync_0;
 (* ASYNC_REG = "TRUE" *) reg [2:0] stream_ctrl_sync_1;
 wire stream_range_en   = stream_ctrl_sync_1[0];
@@ -217,9 +228,11 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
         doppler_real_cap   <= 16'd0;
         doppler_imag_cap   <= 16'd0;
         cfar_detection_cap <= 1'b0;
-        // Gap 2: stream control CDC reset (default all enabled)
-        stream_ctrl_sync_0 <= 3'b111;
-        stream_ctrl_sync_1 <= 3'b111;
+        doppler_data_pending <= 1'b0;
+        cfar_data_pending    <= 1'b0;
+        // Fix #5: Default to range-only on reset (prevents write FSM deadlock)
+        stream_ctrl_sync_0 <= 3'b001;
+        stream_ctrl_sync_1 <= 3'b001;
         // Gap 2: status request CDC reset
         status_req_sync <= 2'b00;
         status_req_sync_prev <= 1'b0;
@@ -267,9 +280,12 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
         if (doppler_valid_sync[1] && !doppler_valid_sync_d) begin
             doppler_real_cap <= doppler_real_hold;
             doppler_imag_cap <= doppler_imag_hold;
+            doppler_data_pending <= 1'b1;
         end
-        if (cfar_valid_sync[1] && !cfar_valid_sync_d)
+        if (cfar_valid_sync[1] && !cfar_valid_sync_d) begin
             cfar_detection_cap <= cfar_detection_hold;
+            cfar_data_pending <= 1'b1;
+        end
     end
 end
 
@@ -382,10 +398,12 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                         current_state <= SEND_STATUS;
                         status_word_idx <= 3'd0;
                     end
-                    // Gap 2: Only trigger write FSM if at least one enabled stream has data
-                    else if ((range_valid_ft && stream_range_en) ||
-                        (doppler_valid_ft && stream_doppler_en) ||
-                        (cfar_valid_ft && stream_cfar_en)) begin
+                    // Trigger write FSM on range_valid edge (primary data source).
+                    // Doppler/cfar data_pending flags are checked inside
+                    // SEND_DOPPLER_DATA and SEND_DETECTION_DATA to skip or send.
+                    // Do NOT trigger on pending flags alone — they're sticky and
+                    // would cause repeated packet starts without new range data.
+                    else if (range_valid_ft && stream_range_en) begin
                         // Don't start write if a read is about to begin
                         if (ft601_rxf) begin  // rxf=1 means no host data pending
                             current_state <= SEND_HEADER;
@@ -442,7 +460,7 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                 end
                 
                 SEND_DOPPLER_DATA: begin
-                    if (!ft601_txe && doppler_valid_ft) begin
+                    if (!ft601_txe && doppler_data_pending) begin
                         ft601_data_oe <= 1;
                         ft601_be <= 4'b1111;
                         
@@ -457,7 +475,7 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                         
                         if (byte_counter == 3) begin
                             byte_counter <= 0;
-                            // Gap 2: skip disabled cfar stream
+                            doppler_data_pending <= 1'b0;
                             if (stream_cfar_en)
                                 current_state <= SEND_DETECTION_DATA;
                             else
@@ -465,15 +483,26 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                         end else begin
                             byte_counter <= byte_counter + 1;
                         end
+                    end else if (!doppler_data_pending) begin
+                        // No doppler data available yet — skip to next stream
+                        byte_counter <= 0;
+                        if (stream_cfar_en)
+                            current_state <= SEND_DETECTION_DATA;
+                        else
+                            current_state <= SEND_FOOTER;
                     end
                 end
                 
                 SEND_DETECTION_DATA: begin
-                    if (!ft601_txe && cfar_valid_ft) begin
+                    if (!ft601_txe && cfar_data_pending) begin
                         ft601_data_oe <= 1;
                         ft601_be <= 4'b0001;
                         ft601_data_out <= {24'b0, 7'b0, cfar_detection_cap};
                         ft601_wr_n <= 0;
+                        cfar_data_pending <= 1'b0;
+                        current_state <= SEND_FOOTER;
+                    end else if (!cfar_data_pending) begin
+                        // No CFAR data available yet — skip to footer
                         current_state <= SEND_FOOTER;
                     end
                 end

@@ -445,7 +445,13 @@ radar_receiver_final rx_inst (
     .host_guard_cycles(host_guard_cycles),
     .host_short_chirp_cycles(host_short_chirp_cycles),
     .host_short_listen_cycles(host_short_listen_cycles),
-    .host_chirps_per_elev(host_chirps_per_elev)
+    .host_chirps_per_elev(host_chirps_per_elev),
+    // STM32 toggle signals for RX mode controller (mode 00 pass-through).
+    // These are the raw GPIO inputs — the RX mode controller's edge detectors
+    // (inside radar_mode_controller) handle debouncing/edge detection.
+    .stm32_new_chirp_rx(stm32_new_chirp),
+    .stm32_new_elevation_rx(stm32_new_elevation),
+    .stm32_new_azimuth_rx(stm32_new_azimuth)
 );
 
 // ============================================================================

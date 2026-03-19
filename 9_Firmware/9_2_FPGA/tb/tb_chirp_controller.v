@@ -431,13 +431,14 @@ initial begin
     // =====================================================================
     $display("--- Group 7: Mixer Control Outputs ---");
     
-    // T7.1: rx_mixer_en follows mixers_enable
+    // T7.1: In IDLE state, both mixers are off even with mixers_enable=1
+    // (Fix #4: mixers are state-dependent, not tied to mixers_enable directly)
     mixers_enable = 1;
     #1;
-    check("rx_mixer_en follows mixers_enable", rx_mixer_en == 1'b1);
+    check("rx_mixer_en off in IDLE (state-dependent)", rx_mixer_en == 1'b0);
     
-    // T7.2: tx_mixer_en follows mixers_enable
-    check("tx_mixer_en follows mixers_enable", tx_mixer_en == 1'b1);
+    // T7.2: tx_mixer_en also off in IDLE
+    check("tx_mixer_en off in IDLE (state-dependent)", tx_mixer_en == 1'b0);
     
     // T7.3: ADAR load pins tied low
     check("ADAR load pins: adar_tx_load_1 is 0", adar_tx_load_1 == 1'b0);
